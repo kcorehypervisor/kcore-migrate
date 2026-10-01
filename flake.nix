@@ -24,6 +24,10 @@
             gh
             cacert
             coreutils
+          ] ++ lib.optionals stdenv.hostPlatform.isLinux [
+            # virt-v2v links the nixpkgs virtio-win tree for Windows guests.
+            virt-v2v
+            qemu-utils
           ];
         };
       });

@@ -20,10 +20,13 @@ func TestOpenSelectsSource(t *testing.T) {
 		if imp.Kind() != kind {
 			t.Fatalf("kind %s, got %s", kind, imp.Kind())
 		}
-		_, err = imp.Read(context.Background())
-		if err == nil {
-			t.Fatal("expected unread client")
-		}
+	}
+	proxmoxSrc, err := Open(inventory.SourceProxmox, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = proxmoxSrc.Read(context.Background()); err == nil {
+		t.Fatal("expected unread proxmox client")
 	}
 	if _, err := Open("kvm", cfg); err == nil {
 		t.Fatal("unknown source was accepted")

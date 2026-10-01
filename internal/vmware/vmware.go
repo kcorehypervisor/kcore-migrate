@@ -1,6 +1,6 @@
-// Package vmware is the first inventory source. The vSphere client is a
-// Reader so a later govmomi implementation can replace the placeholder
-// without changing the CLI or the Terraform writer.
+// Package vmware is the first inventory source. Reader is the vSphere
+// client. The default implementation uses govmomi and lists virtual machines
+// without copying disk bytes.
 package vmware
 
 import (
@@ -11,18 +11,9 @@ import (
 	"github.com/kcorehypervisor/kcore-migrate/internal/inventory"
 )
 
-// ErrNotReady means the vSphere API client is not connected yet.
-var ErrNotReady = errors.New("vmware: vSphere inventory client is not connected")
-
-// Reader lists guests. A real implementation will use the vSphere API.
+// Reader lists guests from vSphere.
 type Reader interface {
 	Guests(ctx context.Context) ([]inventory.Guest, error)
-}
-
-type pendingReader struct{}
-
-func (pendingReader) Guests(context.Context) ([]inventory.Guest, error) {
-	return nil, ErrNotReady
 }
 
 // Source implements inventory.Importer for VMware.
@@ -31,8 +22,8 @@ type Source struct {
 	reader Reader
 }
 
-// Open checks the connection settings and returns a source. Read fails with
-// ErrNotReady until a Reader is installed with WithReader.
+// Open checks the connection settings and returns a source whose Read
+// call lists virtual machines through govmomi.
 func Open(cfg inventory.Config) (*Source, error) {
 	if cfg.Endpoint == "" {
 		return nil, errors.New("vmware: --endpoint is required")
@@ -43,11 +34,10 @@ func Open(cfg inventory.Config) (*Source, error) {
 	if cfg.Password == "" {
 		return nil, errors.New("vmware: password is empty; set VMWARE_PASSWORD or --password-env")
 	}
-	return &Source{cfg: cfg, reader: pendingReader{}}, nil
+	return &Source{cfg: cfg, reader: apiReader{cfg: cfg}}, nil
 }
 
-// WithReader swaps the placeholder client. Tests use this; the vSphere
-// client will too.
+// WithReader swaps the govmomi client. Tests use this.
 func (s *Source) WithReader(r Reader) *Source {
 	s.reader = r
 	return s
