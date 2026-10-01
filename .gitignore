@@ -1,0 +1,5 @@
+/kcore-migrate
+/bin/
+*.exe
+*.test
+*.out
