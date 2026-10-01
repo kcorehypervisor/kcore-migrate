@@ -2,7 +2,6 @@ package registry
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/kcorehypervisor/kcore-migrate/internal/inventory"
@@ -20,13 +19,6 @@ func TestOpenSelectsSource(t *testing.T) {
 		if imp.Kind() != kind {
 			t.Fatalf("kind %s, got %s", kind, imp.Kind())
 		}
-	}
-	proxmoxSrc, err := Open(inventory.SourceProxmox, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = proxmoxSrc.Read(context.Background()); err == nil {
-		t.Fatal("expected unread proxmox client")
 	}
 	if _, err := Open("kvm", cfg); err == nil {
 		t.Fatal("unknown source was accepted")
@@ -51,14 +43,18 @@ func TestVMwareReaderFeedsSnapshot(t *testing.T) {
 	}
 }
 
-func TestProxmoxNotReady(t *testing.T) {
+func TestProxmoxReaderFeedsSnapshot(t *testing.T) {
 	src, err := proxmox.Open(inventory.Config{Endpoint: "https://pve", Username: "root@pam", Password: "p"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = src.Read(context.Background())
-	if !errors.Is(err, proxmox.ErrNotReady) {
+	src.WithReader(fake{"ct-1"})
+	snap, err := src.Read(context.Background())
+	if err != nil {
 		t.Fatal(err)
+	}
+	if snap.Source != inventory.SourceProxmox || len(snap.Guests) != 1 || snap.Guests[0].Name != "ct-1" {
+		t.Fatalf("%+v", snap)
 	}
 }
 

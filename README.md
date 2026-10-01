@@ -1,17 +1,39 @@
+<p align="center">
+  <img src="https://github.com/kcorehypervisor/kcore/raw/main/assets/kcore-logo.png" alt="kcore" width="180">
+</p>
+
 # kcore-migrate
 
 Tools for leaving VMware or Proxmox onto [kcore](https://kcorehypervisor.com/). This repository is separate from the hypervisor and from `kctl`.
 
-`kctl` administers a cluster that already exists. An exit assessment runs on a jump host that can see the source hypervisor, often before any kcore node is installed.
+The operator guide is also on the website: [Import from VMware or Proxmox](https://kcorehypervisor.com/docs/user/import.html).
 
-## Import sources
+`kctl` administers a cluster that already exists, and `kctl migrate` moves a VM between kcore nodes. An exit assessment runs on a jump host that can see the source hypervisor, often before any kcore node is installed.
+
+## Install
+
+On a Linux jump host, `nix develop` in this repository supplies Go and the converters (`virt-v2v`, `qemu-img`):
+
+```bash
+git clone git@github.com:kcorehypervisor/kcore-migrate.git
+cd kcore-migrate
+nix develop
+make build
+./bin/kcore-migrate version
+```
+
+Release archives are on [GitHub Releases](https://github.com/kcorehypervisor/kcore-migrate/releases) for Linux and macOS. Disk conversion still runs on Linux, because `virt-v2v` is Linux-only. Darwin archives build the inventory command.
+
+## Inventory
 
 `kcore-migrate inventory --source` selects an importer. VMware and Proxmox both produce the same guest record. The Terraform writer does not know which hypervisor it came from.
 
-| `--source` | Status |
-|------------|--------|
-| `vmware` | Lists virtual machines from vCenter through [govmomi](https://github.com/vmware/govmomi). Disk bytes stay on the datastore. |
-| `proxmox` | Same shape, for a later Proxmox API client. |
+Inventory does not copy disk bytes. The password is read from the environment, not from a flag, so it does not land in shell history. The default variables are `VMWARE_PASSWORD` and `PROXMOX_PASSWORD`. `--password-env` names a different variable.
+
+| `--source` | What it reads |
+|------------|----------------|
+| `vmware` | Virtual machines from vCenter through [govmomi](https://github.com/vmware/govmomi). Disks stay on the datastore. |
+| `proxmox` | QEMU and LXC guests from the Proxmox API. Disks stay on the node. A host without a port is read on port 8006. |
 
 ```bash
 export VMWARE_PASSWORD=...
@@ -22,33 +44,62 @@ kcore-migrate inventory \
   --out ./migrate-out
 ```
 
-Proxmox uses `PROXMOX_PASSWORD`, or pass `--password-env` for either source.
+```bash
+export PROXMOX_PASSWORD=...
+kcore-migrate inventory \
+  --source proxmox \
+  --endpoint https://pve.example:8006 \
+  --username root@pam \
+  --out ./migrate-out
+```
 
-`inventory` does not copy disk bytes. It writes:
+`--insecure` skips TLS verification.
 
-- `guests.tf` for `kcore_vm`
-- `gaps.md` for anything that guest record cannot express cleanly (extra disks, source findings)
+The output directory contains:
 
-[`terraform-provider-kcore`](https://github.com/kcorehypervisor/terraform-provider-kcore) applies the HCL. `convert` will shell out to the tools below and is not implemented yet.
+- `guests.tf`, one `kcore_vm` per guest (name, CPU, memory, first disk size, NICs)
+- `gaps.md`, for anything that record cannot express cleanly (extra disks, templates, LXC, VLAN tags, raw device mappings, distributed port groups)
 
-The provider today registers `kcore_vm` only. Generated NICs name networks that must already exist. `storage_backend` is `filesystem` until the provider accepts Ceph. `kctl` accepts the finished disk as raw or qcow2.
+[`terraform-provider-kcore`](https://github.com/kcorehypervisor/terraform-provider-kcore) applies the HCL. The provider registers `kcore_vm` only. Generated NICs name networks that must already exist. `storage_backend` is `filesystem` until the provider accepts Ceph. `image_path` stays empty until `convert` produces a qcow2 or raw file. `kctl` accepts only those two formats.
+
+## Convert
+
+`convert` does not read VMDK itself. It shells out to `virt-v2v` or `qemu-img`.
+
+| Input | Tool | Result |
+|-------|------|--------|
+| `.ova`, `.ovf`, `.vmx`, `.vmdk` | `virt-v2v -o disk` | Guest fixes for KVM, then qcow2 or raw disks in `--out` (`name-sda`, …) |
+| `.qcow2`, `.raw`, `.img` | `qemu-img convert` | Container format only. Typical Proxmox disk, or a flat VMDK whose guest already boots on virtio. |
+
+```bash
+kcore-migrate convert --input guest.ova --out ./converted
+kcore-migrate convert --input vm-100-disk-0.qcow2 --format raw --out ./converted/vm-100.raw
+```
+
+`--format` is `qcow2` (the default) or `raw`. `--tool virt-v2v` or `--tool qemu-img` overrides the choice. An OVA, OVF, or VMX cannot use `qemu-img`.
+
+`virt-v2v` from nixpkgs already links the Fedora `virtio-win` driver tree, so Windows virtio drivers are not a separate download. Set `image_path` to the finished file and `image_format` to `qcow2` or `raw` on the generated `kcore_vm`.
+
+Export the guest from vCenter as an OVA or a flat VMDK, or copy the Proxmox disk, then convert that file. A direct vCenter pull needs Broadcom’s proprietary VDDK and an `nbdkit` built with the VDDK plugin. The `nbdkit` in nixpkgs does not include that plugin, and this repository does not ship VDDK.
+
+## Apply
+
+Create the kcore networks named in `guests.tf` before apply. Point `image_path` and `image_format` at the converted disk. Apply with the Terraform provider. Upload the same raw or qcow2 image with `kctl` when the cluster is ready to receive it.
 
 ## Conversion host
 
-Disk conversion runs on a Linux jump host. `nix develop` on Linux includes the open-source tools. The Go toolchain in that shell still builds `kcore-migrate` on Darwin; the converters are Linux-only.
+Disk conversion runs on Linux. The Go toolchain in `nix develop` still builds `kcore-migrate` on Darwin.
 
 | Piece | Where it comes from | What it does |
 |-------|---------------------|--------------|
-| `kcore-migrate` | this repository | Reads the source inventory and, later, calls the converters. Inventory does not copy disk bytes. |
-| `virt-v2v` | nixpkgs, in the Linux shell | Converts an exported VMware guest (OVA, VMX, or VMDK) to qcow2 and fixes the guest for KVM: virtio disk and NIC, bootloader, VMware tools hooks. |
-| `virtio-win` | nixpkgs, linked by `virt-v2v` at `share/virtio-win` | Windows virtio drivers. `virt-v2v` already points at this tree, so the Fedora ISO is not a separate download. |
-| `qemu-img` | nixpkgs `qemu-utils`, in the Linux shell | Changes the container format only. Use it for a Proxmox disk that is already qcow2 or raw, or for a flat VMDK whose guest already boots on virtio. |
-| `nbdkit` | wrapped inside the nixpkgs `virt-v2v` | Serves the source disk to `virt-v2v` during conversion. |
-| VMware VDDK | Broadcom download, installed by the operator | Lets `virt-v2v -i vddk` read disks straight from vCenter. Proprietary. It stays off this repository and off the GitHub release. The `nbdkit` in nixpkgs is built without the VDDK plugin, so this shell converts exported disks. |
+| `kcore-migrate` | this repository | Reads inventory and calls `virt-v2v` or `qemu-img`. |
+| `virt-v2v` | nixpkgs, Linux shell | Converts an exported VMware guest and fixes it for KVM. |
+| `virtio-win` | nixpkgs, linked by `virt-v2v` | Windows virtio drivers. |
+| `qemu-img` | nixpkgs `qemu-utils`, Linux shell | Changes the container format only. |
+| `nbdkit` | wrapped inside nixpkgs `virt-v2v` | Serves the source disk during conversion. |
+| VMware VDDK | Broadcom download, installed by the operator | Direct vCenter disk read. Proprietary. Not in this repository or the GitHub release. |
 | `terraform-provider-kcore` | its own repository | Applies `guests.tf`. |
-| `kctl` | the kcore release | Uploads the raw or qcow2 image and creates the VM once the cluster exists. |
-
-Export the guest from vCenter as an OVA or a flat VMDK, or copy the Proxmox disk, then run the conversion on that file. A direct vCenter pull waits on an operator-installed VDDK and an `nbdkit` built with the VDDK plugin.
+| `kctl` | the kcore release | Uploads the raw or qcow2 image. |
 
 ## Develop
 

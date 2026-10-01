@@ -1,6 +1,5 @@
-// Package proxmox is the second inventory source. It accepts the same
-// connection settings as VMware and returns a snapshot of the same shape.
-// The API client is not written yet.
+// Package proxmox reads a Proxmox VE cluster into the same guest record as
+// VMware. The API client lists QEMU and LXC guests and does not download disks.
 package proxmox
 
 import (
@@ -11,18 +10,9 @@ import (
 	"github.com/kcorehypervisor/kcore-migrate/internal/inventory"
 )
 
-// ErrNotReady means the Proxmox API client is not connected yet.
-var ErrNotReady = errors.New("proxmox: API inventory client is not connected")
-
-// Reader lists guests. A real implementation will use the Proxmox API.
+// Reader lists guests from the Proxmox API.
 type Reader interface {
 	Guests(ctx context.Context) ([]inventory.Guest, error)
-}
-
-type pendingReader struct{}
-
-func (pendingReader) Guests(context.Context) ([]inventory.Guest, error) {
-	return nil, ErrNotReady
 }
 
 // Source implements inventory.Importer for Proxmox.
@@ -31,8 +21,8 @@ type Source struct {
 	reader Reader
 }
 
-// Open checks the connection settings. Read fails with ErrNotReady until a
-// Reader is installed with WithReader.
+// Open checks the connection settings and returns a source whose Read
+// call lists guests through the Proxmox API.
 func Open(cfg inventory.Config) (*Source, error) {
 	if cfg.Endpoint == "" {
 		return nil, errors.New("proxmox: --endpoint is required")
@@ -43,10 +33,10 @@ func Open(cfg inventory.Config) (*Source, error) {
 	if cfg.Password == "" {
 		return nil, errors.New("proxmox: password is empty; set PROXMOX_PASSWORD or --password-env")
 	}
-	return &Source{cfg: cfg, reader: pendingReader{}}, nil
+	return &Source{cfg: cfg, reader: apiReader{cfg: cfg}}, nil
 }
 
-// WithReader swaps the placeholder client.
+// WithReader swaps the API client. Tests use this.
 func (s *Source) WithReader(r Reader) *Source {
 	s.reader = r
 	return s
