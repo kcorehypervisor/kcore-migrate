@@ -1,5 +1,7 @@
 /kcore-migrate
 /bin/
+/dist/
+.env
 *.exe
 *.test
 *.out

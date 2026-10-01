@@ -1,37 +1,66 @@
 # kcore-migrate
 
-Tools for leaving VMware onto [kcore](https://kcorehypervisor.com/). This repository is separate from the hypervisor and from `kctl`.
+Tools for leaving VMware or Proxmox onto [kcore](https://kcorehypervisor.com/). This repository is separate from the hypervisor and from `kctl`.
 
-`kctl` administers a cluster that already exists. A VMware exit assessment runs on a jump host that can see vCenter, often before any kcore node is installed. vCenter credentials stay in this tool. They do not sit next to operator client certificates.
+`kctl` administers a cluster that already exists. An exit assessment runs on a jump host that can see the source hypervisor, often before any kcore node is installed.
 
-## Commands
+## Import sources
 
-| Command | What it does | Status |
-|---------|----------------|--------|
-| `kcore-migrate inventory` | Read-only vCenter inventory. Writes Terraform for `kcore_vm` and a gap report. | Not implemented yet |
-| `kcore-migrate convert` | Turns guest disks into `qcow2` or `raw` by shelling out to `virt-v2v` or `qemu-img`. | Not implemented yet |
+`kcore-migrate inventory --source` selects an importer. VMware and Proxmox both produce the same guest record. The Terraform writer does not know which hypervisor it came from.
 
-Apply stays in Terraform. [`terraform-provider-kcore`](https://github.com/kcorehypervisor/terraform-provider-kcore) creates the VMs. `kctl node upload-image` is how a converted disk gets onto a node.
-
-`inventory` does not copy disk bytes. It is safe to run during an assessment. The gap report is the list of things kcore cannot represent yet: snapshots, RDM, vGPU, DRS rules, Fault Tolerance, shared disks, and Windows guests that still need virtio.
-
-`convert` does not reimplement VMDK conversion.
-
-## What the generated files are
-
-`inventory` will write two artifacts from one read of vCenter:
-
-- Terraform HCL that matches the current `kcore_vm` schema.
-- A migration plan that names each source disk and the target image path `convert` will fill in.
-
-The provider today registers `kcore_vm` only. Generated NICs reference networks that already exist until a network resource is added. `storage_backend` on `kcore_vm` does not yet include Ceph. The generator must not emit HCL the provider cannot apply.
-
-## Build
+| `--source` | Status |
+|------------|--------|
+| `vmware` | Connection settings are checked. The vSphere client is not connected yet. |
+| `proxmox` | Same shape, for a later Proxmox API client. |
 
 ```bash
-go build -o kcore-migrate ./cmd/kcore-migrate
-./kcore-migrate help
+export VMWARE_PASSWORD=...
+kcore-migrate inventory \
+  --source vmware \
+  --endpoint https://vcenter.example \
+  --username migrate@vsphere.local \
+  --out ./migrate-out
 ```
+
+Proxmox uses `PROXMOX_PASSWORD`, or pass `--password-env` for either source.
+
+`inventory` does not copy disk bytes. It writes:
+
+- `guests.tf` for `kcore_vm`
+- `gaps.md` for anything that guest record cannot express cleanly (extra disks, source findings)
+
+[`terraform-provider-kcore`](https://github.com/kcorehypervisor/terraform-provider-kcore) applies the HCL. `convert` will shell out to `virt-v2v` or `qemu-img` and is not implemented yet.
+
+The provider today registers `kcore_vm` only. Generated NICs name networks that must already exist. `storage_backend` is `filesystem` until the provider accepts Ceph.
+
+## Develop
+
+```bash
+nix develop
+make test
+make build
+./bin/kcore-migrate version
+```
+
+The shell provides Go, git, GNU make, `gh`, and `sha256sum`.
+
+## GitHub release
+
+`VERSION` is the release version. `make release` tags `v$(VERSION)`, builds archives, and uploads them. Run it from `nix develop` with `gh` authenticated, or with `GH_TOKEN` in the environment or in a gitignored `.env`.
+
+```bash
+make release
+```
+
+Archives in `dist/`:
+
+- `kcore-migrate-$(VERSION)-linux-amd64.tar.gz`
+- `kcore-migrate-$(VERSION)-linux-arm64.tar.gz`
+- `kcore-migrate-$(VERSION)-darwin-amd64.tar.gz`
+- `kcore-migrate-$(VERSION)-darwin-arm64.tar.gz`
+- `SHA256SUMS`
+
+`make release-publish` uploads an existing `dist/` to the tag that already points at `HEAD`. The working tree must be clean. The tag is not moved if it already points at another commit.
 
 ## License
 
